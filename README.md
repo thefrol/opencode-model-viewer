@@ -49,10 +49,14 @@ Then just ask the agent: *"show the model"* / *"открой STL"*.
 1. The agent opens `viewer.html` in the built-in browser pane and starts the relay.
 2. Drop any STL / OBJ / PLY into the window (or it is pre-loaded, see below).
 3. Rotate (LMB), zoom (wheel), pan (RMB). Click the model to drop numbered
-   markers — coordinates are shown in file units (usually mm), distance between
-   the last two points is measured automatically.
-4. Press **📤 Send to agent** — the coordinates land in the chat as a message.
-5. Points survive page reloads (localStorage, per model). Esc clears them.
+   markers — coordinates and surface normals (`nx, ny, nz`) are recorded in file
+   units (usually mm), and the distance between the last two points is measured
+   automatically.
+4. Pick a **Scale reference** (`🔥 BIC Lighter`, `🍌 Banana`, `🔋 AA Battery`,
+   `💳 Credit Card`) to place a real-world object next to the part for size intuition.
+5. Press **📤 Send to agent** (or `Enter`) — the coordinates land in the chat as a message.
+6. Points survive page reloads (localStorage, per model). `Backspace` removes the
+   last point, `Esc` clears all.
 
 ## Pre-load your own model
 

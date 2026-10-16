@@ -7,11 +7,13 @@ description: Show the user an interactive 3D model viewer (STL/OBJ/PLY) in the b
 
 All files live next to this SKILL.md (OpenCode provides the skill base directory):
 
-- `viewer.html` — self-contained viewer (~0.8 MB, three.js inlined, no network
+- `viewer.html` — self-contained viewer (~0.67 MB, three.js inlined, no network
   needed). Starts empty: the user drags & drops an STL/OBJ/PLY file or uses
   "Choose file". LMB rotate, wheel zoom, RMB pan, click on the model = numbered
-  marker with coordinates (file units, usually mm). Points survive page reloads
-  (localStorage, per model).
+  marker with coordinates and surface normal (`nx, ny, nz`) in file units (usually mm).
+  Includes procedural scale-reference objects (`lighter`, `banana`, `aa`, `card`).
+  Points survive page reloads (localStorage, per model). `Backspace` undoes the last
+  point, `Esc` clears all.
 - `click-relay.py` — relay: points from the viewer → a message into the active
   agent session via the OpenCode HTTP API (`POST /api/session/{id}/prompt`).
   Default port `127.0.0.1:18767`.
