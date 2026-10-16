@@ -69,7 +69,8 @@
   <div id="picks"><div class="empty">Click the model to drop a marker</div></div>
   <div id="dist"></div>
   <div>
-    <button id="clear">Clear points (Esc)</button>
+    <button id="undo" title="Remove last point (Backspace)">Undo (⌫)</button>
+    <button id="clear">Clear (Esc)</button>
     <button id="send" class="btn-primary">📤 Send to agent</button>
   </div>
   <div id="sendstat" class="empty"></div>
@@ -192,11 +193,13 @@
       var st = JSON.parse(localStorage.getItem(stateKey()) || 'null');
       if (st && st.picks && st.picks.length) {
         st.picks.forEach(function (r) {
-          addPick(new THREE.Vector3(r.x - offset.x, r.y - offset.y, r.z - offset.z));
+          var nrm = (r.nx != null && r.ny != null && r.nz != null)
+            ? new THREE.Vector3(r.nx, r.ny, r.nz) : null;
+          addPick(new THREE.Vector3(r.x - offset.x, r.y - offset.y, r.z - offset.z), nrm);
         });
         lastSent = Math.min(st.lastSent || 0, picks.length);
       }
-    } catch (e) { /* нет сохранения — чистый лист */ }
+    } catch (e) { /* no saved state — start clean */ }
     saveState();
     updateSendBtn();
   }
@@ -282,7 +285,15 @@
     mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
     var hits = raycaster.intersectObject(container, true);
-    if (hits.length) addPick(hits[0].point);
+    if (hits.length) {
+      var hit = hits[0];
+      var nrm = null;
+      if (hit.face && hit.face.normal) {
+        var nm = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+        nrm = hit.face.normal.clone().applyMatrix3(nm).normalize();
+      }
+      addPick(hit.point, nrm);
+    }
   });
 
   function makeLabel(text) {
@@ -301,7 +312,7 @@
     return spr;
   }
 
-  function addPick(pointCentered) {
+  function addPick(pointCentered, normalVec) {
     var p = pointCentered.clone().add(offset);
     var n = picks.length + 1;
     var grp = new THREE.Group();
@@ -317,6 +328,11 @@
     markers.push(grp);
 
     var rec = { n: n, x: +p.x.toFixed(3), y: +p.y.toFixed(3), z: +p.z.toFixed(3) };
+    if (normalVec) {
+      rec.nx = +normalVec.x.toFixed(3);
+      rec.ny = +normalVec.y.toFixed(3);
+      rec.nz = +normalVec.z.toFixed(3);
+    }
     picks.push(rec);
     window.__lastPick = rec;
     renderPicks();
@@ -359,6 +375,24 @@
     window.__lastPick = null;
     renderPicks();
   }
+  function popLastPick() {
+    if (!picks.length) return;
+    var m = markers.pop();
+    if (m) {
+      scene.remove(m);
+      m.traverse(function (o) {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+      });
+    }
+    picks.pop();
+    lastSent = Math.min(lastSent, picks.length);
+    window.__lastPick = picks.length ? picks[picks.length - 1] : null;
+    renderPicks();
+    saveState();
+    updateSendBtn();
+  }
+  $('undo').addEventListener('click', popLastPick);
   $('clear').addEventListener('click', function () { clearPicks(); saveState(); updateSendBtn(); });
 
   // ---- deliver points to the agent via a local relay -> OpenCode API ----
@@ -371,7 +405,7 @@
   function saveState() {
     try {
       localStorage.setItem(stateKey(), JSON.stringify({ picks: picks, lastSent: lastSent }));
-    } catch (e) { /* file:// или приватный режим — не критично */ }
+    } catch (e) { /* file:// or private mode — non-critical */ }
   }
   function updateSendBtn() {
     var b = $('send');
@@ -398,14 +432,17 @@
         picks: unsent,
         total: picks.length
       })
-    }).then(function (r) { return r.text(); })
-      .then(function () {
-        lastSent = picks.length;
-        saveState();
-        updateSendBtn();
-        return 'sent points: ' + unsent.length;
-      })
-      .catch(function (e) { return 'relay unreachable: ' + e.message; });
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        if (!r.ok) throw new Error(t || ('HTTP ' + r.status));
+        return t;
+      });
+    }).then(function () {
+      lastSent = picks.length;
+      saveState();
+      updateSendBtn();
+      return 'sent points: ' + unsent.length;
+    }).catch(function (e) { return 'relay error: ' + e.message; });
   };
 
   function sendNow() {
@@ -418,6 +455,7 @@
 
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { clearPicks(); saveState(); updateSendBtn(); }
+    if (e.key === 'Backspace') { e.preventDefault(); popLastPick(); }
     if (e.key === 'Enter' && (!document.activeElement || document.activeElement.tagName !== 'BUTTON')) sendNow();
   });
 
@@ -460,7 +498,16 @@
     var bin = atob(b64);
     var bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    loadSTL(bytes.buffer, el.getAttribute('data-name') || 'model.stl');
+    var name = el.getAttribute('data-name') || 'model.stl';
+    var ext = name.toLowerCase().split('.').pop();
+    var buf = bytes.buffer;
+    if (ext === 'obj') {
+      loadOBJ(new TextDecoder().decode(buf), name);
+    } else if (ext === 'ply') {
+      loadPLY(buf, name);
+    } else {
+      loadSTL(looksAscii(buf) ? new TextDecoder().decode(buf) : buf, name);
+    }
   })();
 
   (function loop() {
