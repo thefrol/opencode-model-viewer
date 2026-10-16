@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Model Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161c;
+    font-family: ui-sans-serif, -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif; color: #e8eaf0; }
+  #canvas-host { position: fixed; inset: 0; }
+  #canvas-host canvas { display: block; outline: none; }
+
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; }
+  #overlay .box { border: 2px dashed rgba(255,255,255,.25); border-radius: 18px; padding: 42px 56px;
+    text-align: center; background: rgba(20,23,30,.5); }
+  #overlay h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
+  #overlay p { margin: 0 0 18px; font-size: 13px; color: #aab1c2; }
+  body.has-model #overlay { display: none; }
+
+  .panel { position: fixed; top: 14px; right: 14px; width: 320px; max-height: 74vh; overflow: auto;
+    background: rgba(18,21,28,.88); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,.09); border-radius: 12px; padding: 13px 16px 14px;
+    font-size: 12.5px; line-height: 1.5; z-index: 5; display: none; }
+  body.has-model .panel { display: block; }
+  .panel .h { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8b93a7; margin: 0 0 4px; }
+  .panel hr { border: 0; border-top: 1px solid rgba(255,255,255,.08); margin: 10px 0; }
+  #hud-title { font-size: 13.5px; font-weight: 600; color: #fff; word-break: break-all; margin: 0 0 3px; }
+  #hud-dims { color: #aab1c2; font-size: 12px; }
+  #picks .empty { color: #737b90; font-size: 12px; }
+  .pick-row { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding: 2px 0;
+    color: #ffd9b0; white-space: pre; }
+  #dist { color: #9fe3a8; font-size: 12px; margin-top: 6px; }
+  button { font: inherit; font-size: 12px; color: #e8eaf0; background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+  button:hover { background: rgba(255,255,255,.14); }
+  .btn-primary { background: #ff8c1a; border-color: #ff8c1a; color: #14161c; font-weight: 600; }
+  .btn-primary:hover { background: #ffa04a; }
+  #clear { margin-top: 10px; }
+  #send { margin-left: 6px; }
+  #send.attention { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,140,26,.55); }
+    50% { box-shadow: 0 0 0 9px rgba(255,140,26,0); }
+  }
+
+  .hint { position: fixed; left: 14px; bottom: 14px; z-index: 5; font-size: 12px; color: #aab1c2;
+    background: rgba(18,21,28,.75); border: 1px solid rgba(255,255,255,.08); border-radius: 10px;
+    padding: 8px 12px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .hint b { color: #ffc884; }
+  .hint .u { color: #737b90; }
+</style>
+</head>
+<body>
+<div id="canvas-host"></div>
+
+<div id="overlay">
+  <div class="box">
+    <h1>Drop a model here</h1>
+    <p>STL · OBJ · PLY — the file never leaves your machine</p>
+    <button id="pick" class="btn-primary">Choose file…</button>
+  </div>
+</div>
+
+<div class="panel" id="hud">
+  <div id="hud-title"></div>
+  <div id="hud-dims"></div>
+  <hr>
+  <div class="h">Points on the model</div>
+  <div id="picks"><div class="empty">Click the model to drop a marker</div></div>
+  <div id="dist"></div>
+  <div>
+    <button id="clear">Clear points (Esc)</button>
+    <button id="send" class="btn-primary">📤 Send to agent</button>
+  </div>
+  <div id="sendstat" class="empty"></div>
+</div>
+
+<div class="hint" id="hint">
+  <b>LMB</b> rotate · <b>wheel</b> zoom · <b>RMB</b> pan · <b>click the model</b> to drop a marker ·
+  <b>"Send to agent"</b> delivers the coordinates straight into the agent chat
+  <span class="u">· coordinates are in file units (usually mm)</span>
+</div>
+
+<input id="file" type="file" accept=".stl,.obj,.ply" hidden>
+
+<script id="embedded-model" type="text/plain" data-name="__MODEL_NAME__">__MODEL_B64__</script>
+
+<script>__THREE__</script>
+<script>__ORBIT__</script>
+<script>__STL__</script>
+<script>__OBJ__</script>
+<script>__PLY__</script>
+<script>
+(function () {
+  'use strict';
+
+  var host = document.getElementById('canvas-host');
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14161c);
+
+  var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  host.appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x30281f, 0.85));
+  var key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1, 2, 1.4); scene.add(key);
+  var rim = new THREE.DirectionalLight(0x88aaff, 0.35); rim.position.set(-1.4, 0.6, -1); scene.add(rim);
+
+  var controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = true;
+
+  var container = null, grid = null;
+  var offset = new THREE.Vector3();
+  var radius = 10;
+  var modelName = '', triangleCount = 0;
+  var markers = [];
+  var picks = [];
+  var pickWaiters = [];
+  window.__picks = picks;
+  window.__lastPick = null;
+
+  function $(id) { return document.getElementById(id); }
+  function fmt(v) { return (Math.round(v * 100) / 100).toFixed(2); }
+  function niceStep(x) {
+    var p = Math.pow(10, Math.floor(Math.log10(x))), n = x / p;
+    return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * p;
+  }
+
+  function resize() {
+    var w = host.clientWidth, h = host.clientHeight;
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function defaultMaterial() {
+    return new THREE.MeshStandardMaterial({ color: 0xb4c4d6, roughness: 0.55, metalness: 0.08, flatShading: false });
+  }
+
+  function clearModel() {
+    if (container) {
+      scene.remove(container);
+      container.traverse(function (o) {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+      });
+      container = null;
+    }
+    if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); grid = null; }
+    clearPicks();
+  }
+
+  function setModel(object3d, name, box, tris) {
+    clearModel();
+    modelName = name; triangleCount = tris;
+    var center = box.getCenter(new THREE.Vector3());
+    var size = box.getSize(new THREE.Vector3());
+    offset.copy(center);
+    object3d.position.sub(center);
+
+    container = new THREE.Group();
+    container.add(object3d);
+    scene.add(container);
+
+    var sphere = box.getBoundingSphere(new THREE.Sphere());
+    radius = Math.max(sphere.radius, 1e-6);
+
+    camera.near = radius / 100;
+    camera.far = radius * 60;
+    camera.updateProjectionMatrix();
+    var fit = radius / Math.tan((camera.fov * Math.PI) / 360) * 1.08;
+    camera.position.set(1, 0.62, 1.08).normalize().multiplyScalar(fit);
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    grid = new THREE.GridHelper(niceStep(radius * 2.8), 20, 0x303746, 0x232833);
+    grid.position.y = -size.y / 2;
+    scene.add(grid);
+
+    document.body.classList.add('has-model');
+    $('hud-title').textContent = name;
+    $('hud-dims').textContent = 'Size: ' + [size.x, size.y, size.z].map(fmt).join(' × ') +
+      '  ·  Faces: ' + tris.toLocaleString('en-US');
+    window.__modelInfo = { name: name, tris: tris, size: { x: size.x, y: size.y, z: size.z } };
+
+    // restore previously saved points for this model
+    try {
+      var st = JSON.parse(localStorage.getItem(stateKey()) || 'null');
+      if (st && st.picks && st.picks.length) {
+        st.picks.forEach(function (r) {
+          addPick(new THREE.Vector3(r.x - offset.x, r.y - offset.y, r.z - offset.z));
+        });
+        lastSent = Math.min(st.lastSent || 0, picks.length);
+      }
+    } catch (e) { /* нет сохранения — чистый лист */ }
+    saveState();
+    updateSendBtn();
+  }
+
+  function loadSTL(data, name) {
+    var geo = new THREE.STLLoader().parse(data);
+    var mesh = new THREE.Mesh(geo, defaultMaterial());
+    var box = new THREE.Box3().setFromObject(mesh);
+    var tris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+    setModel(mesh, name, box, Math.round(tris));
+  }
+
+  function loadOBJ(text, name) {
+    var group = new THREE.OBJLoader().parse(text);
+    group.traverse(function (o) { if (o.isMesh) o.material = defaultMaterial(); });
+    var box = new THREE.Box3().setFromObject(group);
+    var tris = 0;
+    group.traverse(function (o) {
+      if (o.isMesh) tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+    });
+    setModel(group, name, box, Math.round(tris));
+  }
+
+  function loadPLY(data, name) {
+    var geo = new THREE.PLYLoader().parse(data);
+    if (!geo.attributes.normal) geo.computeVertexNormals();
+    var mesh = new THREE.Mesh(geo, defaultMaterial());
+    var box = new THREE.Box3().setFromObject(mesh);
+    var tris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+    setModel(mesh, name, box, Math.round(tris));
+  }
+
+  function looksAscii(buf) {
+    var n = Math.min(buf.byteLength, 1024);
+    var b = new Uint8Array(buf, 0, n), s = '';
+    for (var i = 0; i < n; i++) s += String.fromCharCode(b[i]);
+    return /^\s*solid/i.test(s) && s.indexOf('facet') !== -1;
+  }
+
+  function handleFile(file) {
+    var name = file.name;
+    var ext = name.toLowerCase().split('.').pop();
+    if (ext === 'stl') {
+      file.arrayBuffer().then(function (buf) {
+        loadSTL(looksAscii(buf) ? new TextDecoder().decode(buf) : buf, name);
+      });
+    } else if (ext === 'obj') {
+      file.text().then(function (t) { loadOBJ(t, name); });
+    } else if (ext === 'ply') {
+      file.arrayBuffer().then(function (buf) { loadPLY(buf, name); });
+    } else {
+      alert('Supported files: STL, OBJ and PLY');
+    }
+  }
+
+  ['dragover', 'drop'].forEach(function (ev) {
+    window.addEventListener(ev, function (e) { e.preventDefault(); });
+  });
+  window.addEventListener('drop', function (e) {
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  $('pick').addEventListener('click', function () { $('file').click(); });
+  $('file').addEventListener('change', function (e) {
+    if (e.target.files[0]) handleFile(e.target.files[0]);
+    e.target.value = '';
+  });
+
+  // ---- клик по модели -> метка ----
+  var raycaster = new THREE.Raycaster();
+  var mouse = new THREE.Vector2();
+  var downX = 0, downY = 0, downT = 0;
+
+  renderer.domElement.addEventListener('pointerdown', function (e) {
+    if (e.button === 0) { downX = e.clientX; downY = e.clientY; downT = performance.now(); }
+  });
+  renderer.domElement.addEventListener('pointerup', function (e) {
+    if (e.button !== 0 || !container) return;
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
+    if (performance.now() - downT > 400) return;
+    var r = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    var hits = raycaster.intersectObject(container, true);
+    if (hits.length) addPick(hits[0].point);
+  });
+
+  function makeLabel(text) {
+    var c = document.createElement('canvas'); c.width = c.height = 64;
+    var g = c.getContext('2d');
+    g.fillStyle = 'rgba(255,140,26,0.95)';
+    g.beginPath(); g.arc(32, 32, 26, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff';
+    g.font = 'bold ' + (text.length > 1 ? 30 : 36) + 'px -apple-system, Helvetica, Arial, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(text, 32, 35);
+    var spr = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(c), depthTest: true, transparent: true
+    }));
+    spr.scale.set(radius * 0.075, radius * 0.075, 1);
+    return spr;
+  }
+
+  function addPick(pointCentered) {
+    var p = pointCentered.clone().add(offset);
+    var n = picks.length + 1;
+    var grp = new THREE.Group();
+    grp.add(new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(radius * 0.012, 1e-4), 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff8c1a })
+    ));
+    var label = makeLabel(String(n));
+    label.position.set(0, radius * 0.06, 0);
+    grp.add(label);
+    grp.position.copy(pointCentered);
+    scene.add(grp);
+    markers.push(grp);
+
+    var rec = { n: n, x: +p.x.toFixed(3), y: +p.y.toFixed(3), z: +p.z.toFixed(3) };
+    picks.push(rec);
+    window.__lastPick = rec;
+    renderPicks();
+    saveState();
+    updateSendBtn();
+    var waiters = pickWaiters.splice(0);
+    waiters.forEach(function (w) { w(rec); });
+  }
+
+  function renderPicks() {
+    var el = $('picks');
+    if (!picks.length) {
+      el.innerHTML = '<div class="empty">Click the model to drop a marker</div>';
+      $('dist').textContent = '';
+      return;
+    }
+    el.innerHTML = picks.map(function (r) {
+      return '<div class="pick-row">#' + r.n + '  ' + fmt(r.x) + ', ' + fmt(r.y) + ', ' + fmt(r.z) + '</div>';
+    }).join('');
+    if (picks.length >= 2) {
+      var a = picks[picks.length - 2], b = picks[picks.length - 1];
+      var d = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+      $('dist').textContent = 'Distance #' + a.n + ' → #' + b.n + ': ' + d.toFixed(2);
+    } else {
+      $('dist').textContent = '';
+    }
+  }
+
+  function clearPicks() {
+    markers.forEach(function (m) {
+      scene.remove(m);
+      m.traverse(function (o) {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+      });
+    });
+    markers.length = 0;
+    picks.length = 0;
+    lastSent = 0;
+    window.__lastPick = null;
+    renderPicks();
+  }
+  $('clear').addEventListener('click', function () { clearPicks(); saveState(); updateSendBtn(); });
+
+  // ---- deliver points to the agent via a local relay -> OpenCode API ----
+  var RELAY = 'http://127.0.0.1:__RELAY_PORT__/pick';
+  var lastSent = 0;
+
+  function stateKey() {
+    return 'mv_state:' + (window.__modelInfo ? window.__modelInfo.name : 'none');
+  }
+  function saveState() {
+    try {
+      localStorage.setItem(stateKey(), JSON.stringify({ picks: picks, lastSent: lastSent }));
+    } catch (e) { /* file:// или приватный режим — не критично */ }
+  }
+  function updateSendBtn() {
+    var b = $('send');
+    if (!b) return;
+    var unsent = picks.length - lastSent;
+    if (unsent > 0) {
+      b.textContent = '📤 Send to agent (' + unsent + ')';
+      b.classList.add('attention');
+    } else {
+      b.textContent = '📤 Send to agent';
+      b.classList.remove('attention');
+    }
+  }
+
+  window.__sendToAgent = function () {
+    if (!picks.length) return Promise.resolve('no points');
+    var unsent = picks.slice(lastSent);
+    if (!unsent.length) return Promise.resolve('no new points');
+    return fetch(RELAY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: window.__modelInfo ? window.__modelInfo.name : null,
+        picks: unsent,
+        total: picks.length
+      })
+    }).then(function (r) { return r.text(); })
+      .then(function () {
+        lastSent = picks.length;
+        saveState();
+        updateSendBtn();
+        return 'sent points: ' + unsent.length;
+      })
+      .catch(function (e) { return 'relay unreachable: ' + e.message; });
+  };
+
+  function sendNow() {
+    window.__sendToAgent().then(function (t) {
+      $('sendstat').textContent = t;
+      updateSendBtn();
+    });
+  }
+  $('send').addEventListener('click', sendNow);
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { clearPicks(); saveState(); updateSendBtn(); }
+    if (e.key === 'Enter' && (!document.activeElement || document.activeElement.tagName !== 'BUTTON')) sendNow();
+  });
+
+  window.__waitPick = function (timeoutMs) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function fn(rec) {
+        if (!done) { done = true; clearTimeout(timer); resolve(rec); }
+      }
+      var timer = setTimeout(function () {
+        if (!done) {
+          done = true;
+          var i = pickWaiters.indexOf(fn);
+          if (i >= 0) pickWaiters.splice(i, 1);
+          resolve(null);
+        }
+      }, Math.max(100, timeoutMs || 20000));
+      pickWaiters.push(fn);
+    });
+  };
+
+  // agent testing hook: place a marker programmatically (file coordinates)
+  window.__debugAddPick = function (x, y, z) {
+    addPick(new THREE.Vector3(x - offset.x, y - offset.y, z - offset.z));
+  };
+
+  window.__viewer = {
+    picks: picks,
+    clearPicks: clearPicks,
+    waitPick: function (ms) { return window.__waitPick(ms); },
+    info: function () { return window.__modelInfo || null; }
+  };
+
+  // ---- embedded model ----
+  (function () {
+    var el = document.getElementById('embedded-model');
+    if (!el) return;
+    var b64 = el.textContent.trim();
+    if (!b64 || b64.indexOf('__MODEL') === 0) return;
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    loadSTL(bytes.buffer, el.getAttribute('data-name') || 'model.stl');
+  })();
+
+  (function loop() {
+    requestAnimationFrame(loop);
+    controls.update();
+    renderer.render(scene, camera);
+  })();
+})();
+</script>
+</body>
+</html>

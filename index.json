@@ -1,0 +1,20 @@
+{
+  "skills": [
+    {
+      "name": "model-viewer",
+      "version": "1",
+      "files": [
+        "SKILL.md",
+        "viewer.html",
+        "build.py",
+        "template.html",
+        "click-relay.py",
+        "lib/three.min.js",
+        "lib/OrbitControls.js",
+        "lib/STLLoader.js",
+        "lib/OBJLoader.js",
+        "lib/PLYLoader.js"
+      ]
+    }
+  ]
+}
